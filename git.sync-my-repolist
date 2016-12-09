@@ -16,6 +16,30 @@ import sys
 
 _DEF_CONFIGFILENAME = '~/etc/git-repolist.conf'
 
+EXAMPLE_CONFIG = """#
+# This is {default_configfn}
+#
+# No directives are required, although functionality will be limited
+# with no repositories specified.  In the simplest case, a repo or two,
+# one per line, specified without adornment, will do.
+# Repository paths have ~ user-path expansion performed upon them.
+
+# Any remotes specified here will be fetched before the pull, in the
+# order given here, if they exist as names of remotes in that repo.
+prefer_remotes github origin
+
+# Override the default git command on this host:
+git /opt/git-devel/bin/git
+
+# Some repos to check out (all equivalent)
+~/src/repo1
+dir ~/src/repo2
+repo ~/src/repo3
+
+# Some other repos to pull
+glob ~/go/src/github.com/myname/*
+""".format(default_configfn=_DEF_CONFIGFILENAME)
+
 class Error(Exception):
   """Base class for exceptions from git.sync-my-repolist."""
   pass
@@ -202,6 +226,9 @@ def _main(args, argv0):
                       type=argparse.FileType('r', encoding='UTF-8'),
                       default=os.path.expanduser(_DEF_CONFIGFILENAME),
                       help='Config file to read [%(default)s]')
+  parser.add_argument('--emit-example-config',
+                      action='store_true', default=False,
+                      help='Emit an example config to stdout and exit')
   parser.add_argument('--git',
                       default=DefaultStr('git'),
                       help='Git executable to invoke [%(default)s]')
@@ -212,6 +239,10 @@ def _main(args, argv0):
                       action='count', default=0,
                       help='Be more verbose')
   CONFIG.parse_OPTIONS(parser.parse_args(args=args))
+
+  if CONFIG.OPTIONS.emit_example_config:
+    print(EXAMPLE_CONFIG, end='')
+    return 0
 
   tune_for_environment()
 
