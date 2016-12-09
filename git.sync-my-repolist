@@ -18,6 +18,7 @@ _DEF_CONFIGFILENAME = '~/etc/git-repolist.conf'
 
 OPTIONS=None
 REPO_LIST = []
+PREFER_REMOTES = []
 
 class Error(Exception):
   """Base class for exceptions from git.sync-my-repolist."""
@@ -26,9 +27,10 @@ class Error(Exception):
 
 def extract_existing_repos(fh):
   keyword_handlers = {
-      'dir': lambda d: _extract_one_candidate(os.path.expanduser(d)),
-      'repo': lambda d: _extract_one_candidate(os.path.expanduser(d)),
-      'glob': lambda p: [_extract_one_candidate(d) for d in glob.iglob(os.path.expanduser(p), recursive=True)],
+      'dir': lambda d, c: _extract_one_candidate(os.path.expanduser(d), c),
+      'repo': lambda d, c: _extract_one_candidate(os.path.expanduser(d), c),
+      'glob': lambda p, c: [_extract_one_candidate(d, c) for d in glob.iglob(os.path.expanduser(p), recursive=True)],
+      'prefer_remotes': lambda r, c: PREFER_REMOTES.extend(r.split())
       }
   errored = False
   for lnum, l in enumerate(fh):
@@ -41,37 +43,62 @@ def extract_existing_repos(fh):
       keyword = 'dir'
       param = l
 
-    msg_ctx = { 'linenum': lnum+1, 'line': l }
-    msg_ctx['keyword'] = keyword
-    msg_ctx['param'] = param
+    ctx = { 'linenum': lnum+1, 'line': l }
+    ctx['keyword'] = keyword
+    ctx['param'] = param
 
     keyword = keyword.lower()
     if keyword in keyword_handlers:
-      keyword_handlers[keyword](param)
+      keyword_handlers[keyword](param, ctx)
     else:
-      print('config line {linenum} unknown keyword: {keyword!r}'.format(**msg_ctx), file=sys.stderr)
+      print('config line {linenum} unknown keyword: {keyword!r}'.format(**ctx), file=sys.stderr)
       errored = True
   if errored:
     raise SystemExit()
 
-def _extract_one_candidate(candidate):
+def _extract_one_candidate(candidate, ctx):
+  ctx = dict(ctx)
+  ctx['repo'] = candidate
   if os.path.exists(candidate):
-    REPO_LIST.append(candidate)
+    REPO_LIST.append(ctx)
   elif OPTIONS.verbose:
-    print('Skipping non-existent repo: {0}'.format(candidate))
+    print('Skipping non-existent repo: {repo}'.format(**ctx))
 
 def sync_all():
-  for repo in REPO_LIST:
+  for ctx in REPO_LIST:
+    repo = ctx['repo']
     cmd = [OPTIONS.git, '-C', repo]
 
+    remotes = []
+    remotesCmd = subprocess.Popen(cmd + ['config', '--local', '--name-only', '--get-regexp', 'remote\.[^.]+\.url'],
+        stdout=subprocess.PIPE)
+    for l in remotesCmd.stdout:
+      l = l.rstrip().decode('utf-8')
+      if l.startswith('remote.') and l.endswith('.url'):
+        remotes.append(l[7:-4])
+    remotesCmd.wait()
+    # ignore return code, will be 1 when no remotes, we have that anyway, and if caused by something else, stderr will pass-thru
+    if not remotes:
+      if OPTIONS.verbose:
+        print('{repo!r}: no remotes found, skipping [from config line {linenum}]'.format(**ctx))
+      continue
+    remotes = set(remotes)
+
     if OPTIONS.verbose:
-      print('In: {!r}'.format(repo))
+      print('In: {repo!r}'.format(**ctx))
       subprocess.check_call(cmd + ['status'])
 
     if not OPTIONS.not_really:
+      for preferred in PREFER_REMOTES:
+        if preferred in remotes:
+          subprocess.check_call(cmd + ['fetch', preferred])
+          remotes.discard(preferred)
+      # We don't fetch _all_ remotes; if the branch/master is not in the already-fetched, it will be grabbed by the pull
+      #subprocess.check_call(cmd + ['fetch', '--multiple'] + list(remotes))
       subprocess.check_call(cmd + ['pull'])
+
     elif OPTIONS.verbose:
-      print('{!r}: skipping pull because --not-really'.format(repo))
+      print('{repo!r}: skipping pull because --not-really'.format(**ctx))
 
 def _main(args, argv0):
   parser = argparse.ArgumentParser(
