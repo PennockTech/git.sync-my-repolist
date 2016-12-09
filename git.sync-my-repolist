@@ -16,21 +16,109 @@ import sys
 
 _DEF_CONFIGFILENAME = '~/etc/git-repolist.conf'
 
-OPTIONS=None
-REPO_LIST = []
-PREFER_REMOTES = []
-
 class Error(Exception):
   """Base class for exceptions from git.sync-my-repolist."""
   pass
 
 
-def extract_existing_repos(fh):
+class Config(object):
+  def __init__(self):
+    self.OPTIONS = None
+    self._git = None
+    self.git_can_nameonly = False
+    self.progname = '???'
+
+  def parse_OPTIONS(self, options):
+    self.OPTIONS = options
+    self._git = options.git
+
+  def git(self):
+    return str(self._git)
+
+class Context(dict):
+  def dup(self):
+    return Context(self.copy())
+  def verbose(self, template, **kwargs):
+    return verbose(template, self, **kwargs)
+  def __getattr__(self, key):
+    return self[key]
+  def __setattr__(self, key, nv):
+    # we don't have any direct attrs which we want to allow to be overriden
+    self[key] = nv
+  def __dir__(self):
+    return self.keys()
+  def set(self, k, v):
+    self[k] = v
+
+
+# CONFIG: all metadata _except_ stuff directly set by the config file?
+CONFIG = Config()
+
+REPO_LIST = []
+PREFER_REMOTES = []
+
+# We only support recursive globs if Python does in glob; not much point
+# going further
+if sys.version_info >= (3,5):
+  def my_glob(pattern):
+    return glob.iglob(os.path.expanduser(pattern), recursive=True)
+else:
+  def my_glob(pattern):
+    return glob.iglob(os.path.expanduser(pattern))
+
+
+class DefaultStr(object):
+  """For when we want to have cmdline override config file."""
+  def __init__(self, default):
+    self.value = default
+  def __str__(self):
+    return self.value
+  def __repr__(self):
+    return repr(self.value)
+
+
+def verbose(template, ctx, *, level=1, error=False):
+  if CONFIG.OPTIONS.verbose < level:
+    return
+  out = sys.stderr if error else sys.stdout
+  print(CONFIG.progname, ': ', template.format(**ctx), sep='', file=out)
+
+def tune_for_environment():
+  version = subprocess.check_output([CONFIG.git(), 'version'])
+  if version.startswith(b'git version '):
+    version = version[12:].rstrip().decode('ascii')
+  else:
+    raise Error('Unable to parse git version')
+  version_info = tuple(map(int, version.split('.')))
+  if version_info >= (2, 6):
+    CONFIG.git_can_nameonly = True
+  else:
+    verbose('git too old ({v}) to support "config --name-only"', {'v': version})
+
+def set_config(newvalue, ctx):
+  ctx = ctx.dup()
+  ctx.newvalue = newvalue
+  keyattr = '_' + ctx.keyword
+
+  v = getattr(CONFIG, keyattr)
+  if v is None:
+    ctx.verbose('not a tuneable config option {key!r}', level=0, error=True)
+    return
+  ctx.oldvalue = v
+  if type(v) == DefaultStr:
+    setattr(CONFIG, keyattr, newvalue)
+    ctx.verbose('switched {keyword} from {oldvalue!r} to {newvalue!r}')
+  else:
+    ctx.verbose('ignored new {keyword} value from config line {linenum} because already explicitly set')
+    ctx.verbose('{keyword} remains {oldvalue!r}, ignoring {newvalue!r}')
+
+def parse_config(fh):
   keyword_handlers = {
       'dir': lambda d, c: _extract_one_candidate(os.path.expanduser(d), c),
       'repo': lambda d, c: _extract_one_candidate(os.path.expanduser(d), c),
-      'glob': lambda p, c: [_extract_one_candidate(d, c) for d in glob.iglob(os.path.expanduser(p), recursive=True)],
-      'prefer_remotes': lambda r, c: PREFER_REMOTES.extend(r.split())
+      'glob': lambda p, c: [_extract_one_candidate(d, c) for d in my_glob(p)],
+      'prefer_remotes': lambda r, c: PREFER_REMOTES.extend(r.split()),
+      'git': lambda p, c: set_config(p, c),
       }
   errored = False
   for lnum, l in enumerate(fh):
@@ -43,52 +131,56 @@ def extract_existing_repos(fh):
       keyword = 'dir'
       param = l
 
-    ctx = { 'linenum': lnum+1, 'line': l }
-    ctx['keyword'] = keyword
-    ctx['param'] = param
+    ctx = Context(linenum=lnum+1, line=l, keyword=keyword, param=param)
 
     keyword = keyword.lower()
     if keyword in keyword_handlers:
       keyword_handlers[keyword](param, ctx)
     else:
-      print('config line {linenum} unknown keyword: {keyword!r}'.format(**ctx), file=sys.stderr)
+      ctx.verbose('config line {linenum} unknown keyword: {keyword!r}', error=True, level=0)
       errored = True
   if errored:
     raise SystemExit()
 
 def _extract_one_candidate(candidate, ctx):
-  ctx = dict(ctx)
-  ctx['repo'] = candidate
+  ctx = ctx.dup()
+  ctx.repo = candidate
   if os.path.exists(candidate):
     REPO_LIST.append(ctx)
-  elif OPTIONS.verbose:
-    print('Skipping non-existent repo: {repo}'.format(**ctx))
+  else:
+    ctx.verbose('Skipping non-existent repo: {repo}')
 
 def sync_all():
   for ctx in REPO_LIST:
-    repo = ctx['repo']
-    cmd = [OPTIONS.git, '-C', repo]
+    repo = ctx.repo
+    cmd = [CONFIG.git(), '-C', repo]
 
     remotes = []
-    remotesCmd = subprocess.Popen(cmd + ['config', '--local', '--name-only', '--get-regexp', 'remote\.[^.]+\.url'],
-        stdout=subprocess.PIPE)
+    cmdRemotes = cmd + 'config --local'.split()
+    if CONFIG.git_can_nameonly:
+      cmdRemotes += ['--name-only']
+    cmdRemotes += ['--get-regexp', 'remote\.[^.]+\.url']
+    # old versions of git lack the --name-only, but it makes things safer to use it if available
+    # (the value can contain newlines)
+    remotesCmd = subprocess.Popen(cmdRemotes, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     for l in remotesCmd.stdout:
       l = l.rstrip().decode('utf-8')
+      if not CONFIG.git_can_nameonly:
+        l = l.split(None, 1)[0]
       if l.startswith('remote.') and l.endswith('.url'):
         remotes.append(l[7:-4])
     remotesCmd.wait()
     # ignore return code, will be 1 when no remotes, we have that anyway, and if caused by something else, stderr will pass-thru
     if not remotes:
-      if OPTIONS.verbose:
-        print('{repo!r}: no remotes found, skipping [from config line {linenum}]'.format(**ctx))
+      ctx.verbose('{repo!r}: no remotes found, skipping [from config line {linenum}]')
       continue
     remotes = set(remotes)
 
-    if OPTIONS.verbose:
-      print('In: {repo!r}'.format(**ctx))
+    if CONFIG.OPTIONS.verbose:
+      ctx.verbose('In: {repo!r}')
       subprocess.check_call(cmd + ['status'])
 
-    if not OPTIONS.not_really:
+    if not CONFIG.OPTIONS.not_really:
       for preferred in PREFER_REMOTES:
         if preferred in remotes:
           subprocess.check_call(cmd + ['fetch', preferred])
@@ -97,10 +189,11 @@ def sync_all():
       #subprocess.check_call(cmd + ['fetch', '--multiple'] + list(remotes))
       subprocess.check_call(cmd + ['pull'])
 
-    elif OPTIONS.verbose:
-      print('{repo!r}: skipping pull because --not-really'.format(**ctx))
+    else:
+      ctx.verbose('{repo!r}: skipping pull because --not-really')
 
 def _main(args, argv0):
+  CONFIG.progname = argv0
   parser = argparse.ArgumentParser(
       description=__doc__,
       formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -110,7 +203,7 @@ def _main(args, argv0):
                       default=os.path.expanduser(_DEF_CONFIGFILENAME),
                       help='Config file to read [%(default)s]')
   parser.add_argument('--git',
-                      default='git',
+                      default=DefaultStr('git'),
                       help='Git executable to invoke [%(default)s]')
   parser.add_argument('-n', '--not-really',
                       action='store_true', default=False,
@@ -118,10 +211,11 @@ def _main(args, argv0):
   parser.add_argument('-v', '--verbose',
                       action='count', default=0,
                       help='Be more verbose')
-  global OPTIONS
-  OPTIONS = parser.parse_args(args=args)
+  CONFIG.parse_OPTIONS(parser.parse_args(args=args))
 
-  extract_existing_repos(OPTIONS.config)
+  tune_for_environment()
+
+  parse_config(CONFIG.OPTIONS.config)
 
   sync_all()
 
