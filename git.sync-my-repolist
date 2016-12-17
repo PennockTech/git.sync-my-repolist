@@ -9,12 +9,14 @@ A gross crude hack but convenient.
 __author__ = 'phil.pennock@spodhuis.org (Phil Pennock)'
 
 import argparse
+import collections
 import glob
 import os.path
 import subprocess
 import sys
 
 _DEF_CONFIGFILENAME = '~/etc/git-repolist.conf'
+_DEF_GROUP = '_default_'
 
 EXAMPLE_CONFIG = """#
 # This is {default_configfn}
@@ -78,7 +80,7 @@ class Context(dict):
 # CONFIG: all metadata _except_ stuff directly set by the config file?
 CONFIG = Config()
 
-REPO_LIST = []
+REPO_LISTS = collections.defaultdict(list)
 PREFER_REMOTES = []
 
 # We only support recursive globs if Python does in glob; not much point
@@ -137,12 +139,14 @@ def set_config(newvalue, ctx):
     ctx.verbose('{keyword} remains {oldvalue!r}, ignoring {newvalue!r}')
 
 def parse_config(fh):
+  group = [_DEF_GROUP]
   keyword_handlers = {
       'dir': lambda d, c: _extract_one_candidate(os.path.expanduser(d), c),
       'repo': lambda d, c: _extract_one_candidate(os.path.expanduser(d), c),
       'glob': lambda p, c: [_extract_one_candidate(d, c) for d in my_glob(p)],
       'prefer_remotes': lambda r, c: PREFER_REMOTES.extend(r.split()),
       'git': lambda p, c: set_config(p, c),
+      'group': lambda g, c: group.insert(0, g),
       }
   errored = False
   for lnum, l in enumerate(fh):
@@ -155,7 +159,7 @@ def parse_config(fh):
       keyword = 'dir'
       param = l
 
-    ctx = Context(linenum=lnum+1, line=l, keyword=keyword, param=param)
+    ctx = Context(linenum=lnum+1, line=l, keyword=keyword, param=param, group=group[0])
 
     keyword = keyword.lower()
     if keyword in keyword_handlers:
@@ -170,12 +174,14 @@ def _extract_one_candidate(candidate, ctx):
   ctx = ctx.dup()
   ctx.repo = candidate
   if os.path.exists(candidate):
-    REPO_LIST.append(ctx)
+    REPO_LISTS[ctx.group].append(ctx)
   else:
     ctx.verbose('Skipping non-existent repo: {repo}')
 
-def sync_all():
-  for ctx in REPO_LIST:
+def sync_all(groupname):
+  if not groupname:
+    groupname = _DEF_GROUP
+  for ctx in REPO_LISTS[groupname]:
     repo = ctx.repo
     cmd = [CONFIG.git(), '-C', repo]
 
@@ -232,6 +238,12 @@ def _main(args, argv0):
   parser.add_argument('--git',
                       default=DefaultStr('git'),
                       help='Git executable to invoke [%(default)s]')
+  parser.add_argument('-g', '--group',
+                      default='',
+                      help='Sync a non-default group')
+  parser.add_argument('--list-groups',
+                      action='store_true', default=False,
+                      help='List configured groups instead')
   parser.add_argument('-n', '--not-really',
                       action='store_true', default=False,
                       help='Make no mutating changes')
@@ -248,7 +260,14 @@ def _main(args, argv0):
 
   parse_config(CONFIG.OPTIONS.config)
 
-  sync_all()
+  if CONFIG.OPTIONS.list_groups:
+    for g in sorted(REPO_LISTS.keys()):
+      if g == _DEF_GROUP:
+        continue
+      print(g)
+    return 0
+
+  sync_all(CONFIG.OPTIONS.group)
 
 if __name__ == '__main__':
   argv0 = sys.argv[0].rsplit('/')[-1]
