@@ -40,6 +40,10 @@ repo ~/src/repo3
 
 # Some other repos to pull
 glob ~/go/src/github.com/myname/*
+
+# We only pull project foo if explicitly requested
+group foo
+glob ~/go/foo.example.com/*
 """.format(default_configfn=_DEF_CONFIGFILENAME)
 
 class Error(Exception):
@@ -184,9 +188,13 @@ def _extract_one_candidate(candidate, ctx):
   ctx = ctx.dup()
   ctx.repo = candidate
   if os.path.exists(candidate):
-    REPO_LISTS[ctx.group].append(ctx)
+    if os.path.isdir(candidate):
+      REPO_LISTS[ctx.group].append(ctx)
+    else:
+      # bump level because expect this to be files in a directory mostly holding repo subdirs
+      ctx.verbose('Skipping non-directory: {repo!r}', level=2)
   else:
-    ctx.verbose('Skipping non-existent repo: {repo}')
+    ctx.verbose('Skipping non-existent repo: {repo!r}')
 
 def sync_all(groupname):
   if not groupname:
@@ -194,6 +202,10 @@ def sync_all(groupname):
   for ctx in REPO_LISTS[groupname]:
     repo = ctx.repo
     cmd = [CONFIG.git(), '-C', repo]
+
+    if CONFIG.OPTIONS.list_repos:
+      ctx.verbose('{repo!r}', level=0)
+      continue
 
     remotes = []
     cmdRemotes = cmd + 'config --local'.split()
@@ -262,6 +274,9 @@ def _main(args, argv0):
   parser.add_argument('--list-groups',
                       action='store_true', default=False,
                       help='List configured groups instead')
+  parser.add_argument('--list-repos',
+                      action='store_true', default=False,
+                      help='List known repos we would act on instead')
   parser.add_argument('-n', '--not-really',
                       action='store_true', default=False,
                       help='Make no mutating changes')
