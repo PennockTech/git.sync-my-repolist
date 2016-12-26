@@ -4,6 +4,15 @@
 git.sync-my-repolist: sync all my repos, per config file
 
 A gross crude hack but convenient.
+
+Use `git config --local --bool pdp.skip-auto-sync` in a repo to mark it
+to be skipped even if listed in our config file.  Can also apply globally
+if you want to inefficiently block this script.
+
+End argument parsing with `--` and any command-line presented thereafter
+is used as an alternative git sub-command to `pull`.
+
+Ues `git.sync-my-repolist -g all -- fsck` to check ~everything.
 """
 
 __author__ = 'phil.pennock@spodhuis.org (Phil Pennock)'
