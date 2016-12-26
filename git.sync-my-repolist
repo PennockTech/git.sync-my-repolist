@@ -274,7 +274,7 @@ class Syncer(object):
 
       if self.config.OPTIONS.verbose:
         ctx.verbose('In: {repo!r}')
-        subprocess.check_call(cmd + ['status'])
+        subprocess.check_call(cmd + ['status', '--short'])
 
       if self.config.sub_command is not None:
         ctx.command_line = self.config.sub_command
