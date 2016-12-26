@@ -44,6 +44,8 @@ glob ~/go/src/github.com/myname/*
 # We only pull project foo if explicitly requested
 group foo
 glob ~/go/foo.example.com/*
+
+# If we do not define group 'all' then a virtual 'all' will exist
 """.format(default_configfn=_DEF_CONFIGFILENAME)
 
 class Error(Exception):
@@ -226,9 +228,9 @@ class Syncer(object):
       if g in self.seen_groups:
         verbose('already synced group {group!r}', {'group': g})
         continue
-      if g == 'all':
+      if g == 'all' and 'all' not in self.known_groups:
         self.seen_groups.add('all')
-        todo.extend(self.known_groups)
+        todo.extend(sorted(self.known_groups))
         continue
       self.One(g)
 
