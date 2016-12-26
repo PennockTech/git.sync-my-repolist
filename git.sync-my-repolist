@@ -217,7 +217,7 @@ class Syncer(object):
     self.known_groups = set(config.repo_lists.keys())
     self.seen_repos = set()
 
-  def Each(self, groups):
+  def EachGroup(self, groups):
     if not groups:
       groups = [_DEF_GROUP]
     todo = list(groups)
@@ -232,9 +232,9 @@ class Syncer(object):
         self.seen_groups.add('all')
         todo.extend(sorted(self.known_groups))
         continue
-      self.One(g)
+      self.OneGroup(g)
 
-  def One(self, groupname):
+  def OneGroup(self, groupname):
     self.seen_groups.add(groupname)
     if groupname not in self.known_groups:
       verbose('unknown groupname {group!r}', {'group': groupname}, error=True, level=0)
@@ -252,6 +252,19 @@ class Syncer(object):
         continue
 
       cmd = [self.config.git(), '-C', repo]
+
+      # don't include --local: let it be set in ~/.gitconfig I suppose
+      cmdShouldSkip = cmd + 'config --bool pdp.skip-auto-sync'.split()
+      shouldSkipCmd = subprocess.Popen(cmdShouldSkip, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+      output = shouldSkipCmd.stdout.read()
+      rc = shouldSkipCmd.wait()
+      if rc == 0:
+        if output.rstrip() == b'true':
+          ctx.verbose('{repo!r}: repo config says to skip this repo')
+          continue
+        else:
+          ctx.skip_auto_sync = output.rstrip().decode('utf-8')
+          ctx.verbose('{repo!r}: config found pdp.skip-auto-sync but is set: {skip_auto_sync!r}', level=2)
 
       remotes = []
       cmdRemotes = cmd + 'config --local'.split()
@@ -350,7 +363,7 @@ def _main(args, argv0):
 
   groups = [x for y in map(lambda x: x.split(','), config.OPTIONS.group) for x in y]
   verbose('groups: {g}', {'g': groups})
-  Syncer(config).Each(groups)
+  Syncer(config).EachGroup(groups)
 
 if __name__ == '__main__':
   argv0 = sys.argv[0].rsplit('/')[-1]
