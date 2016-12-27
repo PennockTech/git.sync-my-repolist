@@ -12,7 +12,10 @@ Can also apply globally if you want to inefficiently block this script.
 End argument parsing with `--` and any command-line presented thereafter
 is used as an alternative git sub-command to `pull`.
 
-Ues `git.sync-my-repolist -g all -- fsck` to check ~everything.
+Use `git config --local pdp.skip-sync-cmds 'fsck fred'` to mark a repo
+as to be skipped for the alternative sub-commands `fsck` and `fred`.
+
+Thus `git.sync-my-repolist -g all -- fsck` to check "roughly everything".
 """
 
 __author__ = 'phil.pennock@spodhuis.org (Phil Pennock)'
@@ -274,27 +277,56 @@ class Syncer(object):
         else:
           ctx.skip_auto_sync = output.rstrip().decode('utf-8')
           ctx.verbose('{repo!r}: config found pdp.skip-auto-sync but is set: {skip_auto_sync!r}', level=2)
+      del cmdShouldSkip, shouldSkipCmd, output, rc
 
-      remotes = []
-      cmdRemotes = cmd + 'config --local'.split()
-      if self.config.git_can_nameonly:
-        cmdRemotes += ['--name-only']
-      cmdRemotes += ['--get-regexp', 'remote\.[^.]+\.url']
-      # old versions of git lack the --name-only, but it makes things safer to use it if available
-      # (the value can contain newlines)
-      remotesCmd = subprocess.Popen(cmdRemotes, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-      for l in remotesCmd.stdout:
-        l = l.rstrip().decode('utf-8')
-        if not self.config.git_can_nameonly:
-          l = l.split(None, 1)[0]
-        if l.startswith('remote.') and l.endswith('.url'):
-          remotes.append(l[7:-4])
-      remotesCmd.wait()
-      # ignore return code, will be 1 when no remotes, we have that anyway, and if caused by something else, stderr will pass-thru
-      if not remotes:
-        ctx.verbose('{repo!r}: no remotes found, skipping [from config line {linenum}]')
-        continue
-      remotes = set(remotes)
+      if self.config.sub_command is not None:
+        # If we're going to skip the remotes check, we still need to test if we are a git dir.
+        # We don't want the same check; we want to be able to fsck/whatever a repo with no remotes.
+        # So different check:
+        cmdIsRepo = cmd + 'rev-parse --git-dir'.split()
+        isRepoCmd = subprocess.Popen(cmdIsRepo, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        rc = isRepoCmd.wait()
+        if rc != 0:
+          ctx.verbose('{repo!r}: not a repo, skipping [from config line {linenum}]')
+          continue
+
+        cmdShouldSkip = cmd + 'config pdp.skip-sync-cmds'.split()
+        shouldSkipCmd = subprocess.Popen(cmdShouldSkip, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        output = shouldSkipCmd.stdout.read()
+        rc = shouldSkipCmd.wait()
+        if rc == 0:
+          i_am = self.config.sub_command[0].lower()
+          ctx.i_am = i_am
+          if i_am in output.decode('utf-8').lower().split():
+            ctx.verbose('{repo!r}: repo config says to skip this repo for action {i_am!r}', level=0)
+            continue
+          else:
+            ctx.skip_sync_cmds = ' '.join(output.decode('utf-8').lower().split())
+            ctx.verbose('{repo!r}: config found pdp.skip-sync-cmds but {i_am!r} not in {skip_sync_cmds!r}', level=2)
+          del i_am
+        del cmdShouldSkip, shouldSkipCmd, output, rc
+
+      else: # we only want the remotes if not using sub-command override
+        remotes = []
+        cmdRemotes = cmd + 'config --local'.split()
+        if self.config.git_can_nameonly:
+          cmdRemotes += ['--name-only']
+        cmdRemotes += ['--get-regexp', 'remote\.[^.]+\.url']
+        # old versions of git lack the --name-only, but it makes things safer to use it if available
+        # (the value can contain newlines)
+        remotesCmd = subprocess.Popen(cmdRemotes, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        for l in remotesCmd.stdout:
+          l = l.rstrip().decode('utf-8')
+          if not self.config.git_can_nameonly:
+            l = l.split(None, 1)[0]
+          if l.startswith('remote.') and l.endswith('.url'):
+            remotes.append(l[7:-4])
+        remotesCmd.wait()
+        # ignore return code, will be 1 when no remotes, we have that anyway, and if caused by something else, stderr will pass-thru
+        if not remotes:
+          ctx.verbose('{repo!r}: no remotes found, skipping [from config line {linenum}]')
+          continue
+        remotes = set(remotes)
 
       if self.config.OPTIONS.verbose:
         ctx.verbose('In: {repo!r}')
