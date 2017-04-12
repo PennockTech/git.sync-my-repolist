@@ -16,6 +16,18 @@ Use `git config --local pdp.skip-sync-cmds 'fsck fred'` to mark a repo
 as to be skipped for the alternative sub-commands `fsck` and `fred`.
 
 Thus `git.sync-my-repolist -g all -- fsck` to check "roughly everything".
+
+Groups are processed in the order they appear on the command-line; the "all"
+group sorts known groups alphabetically.  Within each group, items are
+processed in the order they appear in the configuration file.  Glob results
+are sorted (by unspecified collation).  Duplicate directory pathnames are
+skipped (by pathname, so symlinks would defeat that).  Knowing the defined
+ordering helps for using --continue.
+
+If a repo is skipped past for --continue and then encountered again, it will
+still count as "seen", on the assumption that you're continuing after an
+interrupted run and it will have been seen on the first pass.  The --continue
+option expects a full repo path, not a dirname.
 """
 
 __author__ = 'phil.pennock@spodhuis.org (Phil Pennock)'
@@ -95,13 +107,13 @@ class Context(dict):
     self[k] = v
 
 # We only support recursive globs if Python does in glob; not much point
-# going further
+# going further.  We do need to sort, for resumption to be sane.
 if sys.version_info >= (3,5):
   def my_glob(pattern):
-    return glob.iglob(os.path.expanduser(pattern), recursive=True)
+    return sorted(glob.iglob(os.path.expanduser(pattern), recursive=True))
 else:
   def my_glob(pattern):
-    return glob.iglob(os.path.expanduser(pattern))
+    return sorted(glob.iglob(os.path.expanduser(pattern)))
 
 
 class DefaultStr(object):
@@ -228,6 +240,7 @@ class Syncer(object):
     self.seen_groups = set()
     self.known_groups = set(config.repo_lists.keys())
     self.seen_repos = set()
+    self.continue_skipping = bool(config.OPTIONS.continue_repo)
 
   def EachGroup(self, groups):
     if not groups:
@@ -237,6 +250,9 @@ class Syncer(object):
       g = todo.pop(0)
       if g is None:
         g = _DEF_GROUP
+      if not g:
+        verbose('skipping an empty groupname', {})
+        continue
       if g in self.seen_groups:
         verbose('already synced group {group!r}', {'group': g})
         continue
@@ -258,6 +274,14 @@ class Syncer(object):
         ctx.verbose('already handled repo {repo}')
         continue
       self.seen_repos.add(repo)
+
+      # Skip for --continue comes after seen marking, see pkg doc for rationale ^^^
+      if self.continue_skipping:
+        if self.config.OPTIONS.continue_repo == repo:
+          self.continue_skipping = False
+        else:
+          ctx.verbose('skipping past {repo!r}')
+          continue
 
       if self.config.OPTIONS.list_repos:
         ctx.verbose('{repo!r}', level=0)
@@ -384,6 +408,9 @@ def _main(args, argv0):
   parser.add_argument('-v', '--verbose',
                       action='count', default=0,
                       help='Be more verbose')
+  parser.add_argument('-C', '--continue',
+                      dest='continue_repo', type=str, default='',
+                      help='skip repos "before" this one ("all" sorts groups alphabetically)')
   parser.add_argument('subcommand_override', nargs=argparse.REMAINDER)
   config.parse_OPTIONS(parser.parse_args(args=args))
 
