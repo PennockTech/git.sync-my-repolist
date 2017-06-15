@@ -27,7 +27,10 @@ ordering helps for using --continue.
 If a repo is skipped past for --continue and then encountered again, it will
 still count as "seen", on the assumption that you're continuing after an
 interrupted run and it will have been seen on the first pass.  The --continue
-option expects a full repo path, not a dirname.
+option should be given a full repo path, but an unqualified dirname may be
+used at the risk of conflicts.
+Similarly for --continue-after which lets you skip past a known-broken setup
+without repairing it or marking it for skipping.
 """
 
 __author__ = 'phil.pennock@spodhuis.org (Phil Pennock)'
@@ -240,7 +243,15 @@ class Syncer(object):
     self.seen_groups = set()
     self.known_groups = set(config.repo_lists.keys())
     self.seen_repos = set()
-    self.continue_skipping = bool(config.OPTIONS.continue_repo)
+    self.continue_skipping = bool(config.OPTIONS.continue_repo) or bool(config.OPTIONS.continue_after_repo)
+    self.continue_bare = False
+    if self.continue_skipping:
+      if config.OPTIONS.continue_repo != '' and config.OPTIONS.continue_after_repo != '':
+        raise Error('got mutually exclusive options, should\'ve been blocked before now')
+      if config.OPTIONS.continue_repo != '' and os.path.sep not in config.OPTIONS.continue_repo:
+        self.continue_bare = True
+      if config.OPTIONS.continue_after_repo != '' and os.path.sep not in config.OPTIONS.continue_after_repo:
+        self.continue_bare = True
 
   def EachGroup(self, groups):
     if not groups:
@@ -262,6 +273,18 @@ class Syncer(object):
         continue
       self.OneGroup(g)
 
+  def _should_continue(self, repo):
+    if not self.continue_skipping:
+      return False
+    testname = os.path.basename(repo) if self.continue_bare else repo
+    if self.config.OPTIONS.continue_repo != '' and self.config.OPTIONS.continue_repo == testname:
+      self.continue_skipping = False
+      return False
+    if self.config.OPTIONS.continue_after_repo != '' and self.config.OPTIONS.continue_after_repo == testname:
+      self.continue_skipping = False
+      return True
+    return True
+
   def OneGroup(self, groupname):
     self.seen_groups.add(groupname)
     if groupname not in self.known_groups:
@@ -276,12 +299,9 @@ class Syncer(object):
       self.seen_repos.add(repo)
 
       # Skip for --continue comes after seen marking, see pkg doc for rationale ^^^
-      if self.continue_skipping:
-        if self.config.OPTIONS.continue_repo == repo:
-          self.continue_skipping = False
-        else:
-          ctx.verbose('skipping past {repo!r}')
-          continue
+      if self.continue_skipping and self._should_continue(repo):
+        ctx.verbose('skipping past {repo!r}')
+        continue
 
       if self.config.OPTIONS.list_repos:
         ctx.verbose('{repo!r}', level=0)
@@ -408,9 +428,13 @@ def _main(args, argv0):
   parser.add_argument('-v', '--verbose',
                       action='count', default=0,
                       help='Be more verbose')
-  parser.add_argument('-C', '--continue',
+  pacont = parser.add_mutually_exclusive_group()
+  pacont.add_argument('-C', '--continue',
                       dest='continue_repo', type=str, default='',
                       help='skip repos "before" this one ("all" sorts groups alphabetically)')
+  pacont.add_argument('-A', '--continue-after',
+                      dest='continue_after_repo', type=str, default='',
+                      help='skip repos "after" this one ("all" sorts groups alphabetically)')
   parser.add_argument('subcommand_override', nargs=argparse.REMAINDER)
   config.parse_OPTIONS(parser.parse_args(args=args))
 
