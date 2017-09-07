@@ -44,6 +44,7 @@ import sys
 
 _DEF_CONFIGFILENAME = '~/etc/git-repolist.conf'
 _DEF_GROUP = '_default_'
+TERM_TITLE_APPNAME = 'gitsync'
 
 EXAMPLE_CONFIG = """#
 # This is {default_configfn}
@@ -119,6 +120,41 @@ else:
     return sorted(glob.iglob(os.path.expanduser(pattern)))
 
 
+class TerminalState(object):
+  """For terminal state manipulations.
+
+  We are a semi-long-running process, sometimes spewing significant output
+  per repo.  We want to be able to integrate with terminal state."""
+  def __init__(self):
+    ttype = os.environ.get('TERM', '').lower()
+    self.do_titles = ttype.startswith('xterm') or ttype.startswith('iterm')
+
+  def __enter__(self):
+    self.StartApp()
+    return self
+
+  def __exit__(self, typ, value, tb):
+    self.EndApp()
+
+  def StartApp(self):
+    if self.do_titles:
+      print('\033[22;0t', end='') # push both titles onto stack
+      self.Title(None)
+
+  def Title(self, subtitle):
+    """Set current terminal title."""
+    if not self.do_titles:
+      return
+    if subtitle:
+      print('\033]0;{}: {}\a'.format(TERM_TITLE_APPNAME, subtitle), end='')
+    else:
+      print('\033]0;{}\a'.format(TERM_TITLE_APPNAME), end='')
+
+  def EndApp(self):
+    if self.do_titles:
+      print('\033[23;0t', end='') # pop both titles from stack
+
+
 class DefaultStr(object):
   """For when we want to have cmdline override config file."""
   def __init__(self, default):
@@ -135,6 +171,7 @@ class Config(object):
     self._git = None
     self.git_can_nameonly = False
     self._progname = '???'
+    self.termstate = None
     self.repo_lists = collections.defaultdict(list)
     self.prefer_remotes = []
 
@@ -328,6 +365,7 @@ class Syncer(object):
   def OneRepo(self, ctx):
     repo = ctx.repo
     cmd = [self.config.git(), '-C', repo]
+    self.config.termstate.Title(os.path.basename(repo))
 
     if self.config.sub_command is not None:
       # If we're going to skip the remotes check, we still need to test if we are a git dir.
@@ -428,9 +466,10 @@ class Syncer(object):
 
     subprocess.check_call(cmd + ['pull'])
 
-def _main(args, argv0):
+def _main(args, argv0, termstate):
   config = Config()
   config.progname = argv0
+  config.termstate = termstate
   parser = argparse.ArgumentParser(
       description=__doc__,
       formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -491,11 +530,12 @@ def _main(args, argv0):
 
 if __name__ == '__main__':
   argv0 = sys.argv[0].rsplit('/')[-1]
-  try:
-    rv = _main(sys.argv[1:], argv0=argv0)
-    sys.exit(rv)
-  except ExitError as e:
-    print('{0}: {1}'.format(argv0, e), file=sys.stderr)
-    sys.exit(1)
+  with TerminalState() as term:
+    try:
+      rv = _main(sys.argv[1:], argv0=argv0, termstate=term)
+      sys.exit(rv)
+    except ExitError as e:
+      print('{0}: {1}'.format(argv0, e), file=sys.stderr)
+      sys.exit(1)
 
 # vim: set ft=python sw=2 expandtab :
