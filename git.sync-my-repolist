@@ -145,8 +145,9 @@ class TerminalState(object):
     """Set current terminal title."""
     if not self.do_titles:
       return
+    # 0: icon+title; 1: icon; 2: title; 3 take key=val and set as X11 property on top-level
     if subtitle:
-      print('\033]0;{}: {}\a'.format(TERM_TITLE_APPNAME, subtitle), end='')
+      print('\033]2;{}: {}\a'.format(TERM_TITLE_APPNAME, subtitle), end='')
     else:
       print('\033]0;{}\a'.format(TERM_TITLE_APPNAME), end='')
 
